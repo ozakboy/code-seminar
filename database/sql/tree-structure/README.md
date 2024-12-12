@@ -4,7 +4,7 @@
 
 以下的範例都是以書中的例子改寫成 MySQL 的程式 (不包括 common table expression，因為 MySQL 不支援)，並且附上建立資料的 query，方便自己實驗時使用。例圖部份是以書中的圖修改的。
 
-[migration.sql](https://blog.rangilin.idv.tw/tree-structure-in-sql/migration.sql)
+![migration.sql](./migration.sql)
 
 ## 前置
 
