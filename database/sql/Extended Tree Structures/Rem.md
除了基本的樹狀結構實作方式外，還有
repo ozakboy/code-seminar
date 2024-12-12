@@ -266,4 +266,4 @@ AND c2.numerator/c2.denominator < (c1.numerator+1)/(c1.denominator);
 - 資料的使用模式（讀多寫少？寫多讀少？）
 - 樹的特性（深度？寬度？變動頻率？）
 - 業務需求（版本控制？稽核追蹤？）
-- 維護複雜度
+- 維護複雜度 
