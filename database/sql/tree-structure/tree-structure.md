@@ -1,14 +1,20 @@
-# Tree structure in SQL
+# SQL中的樹狀結構實現方法
 
-開發應用程式時，樹狀結構的資料其實很常見，只是當需要將這些資料用 SQL 資料庫儲存下來時，就會發現問題忽然複雜了許多；能保存資料間的階層關連性還不夠，還必須考慮到各類查詢和修改的效能。前陣子讀了 [SQL Antipatterns: Avoiding the Pitfalls of Database Programming](https://pragprog.com/book/bksqla/sql-antipatterns)；在這本書裡面，作者就儲存樹狀結構的幾種 pattern 做了介紹，並比較每個方式的優缺點。我覺得這是很實用的技巧，所以這篇文章就以書中的資料為主，來介紹不同的實作方式。
+## 前言
 
-以下的範例都是以書中的例子改寫成 MySQL 的程式 (不包括 common table expression，因為 MySQL 不支援)，並且附上建立資料的 query，方便自己實驗時使用。例圖部份是以書中的圖修改的。
+在開發應用程式時，樹狀結構的資料其實很常見。無論是論壇的評論系統、組織架構圖、檔案目錄結構等,都需要處理具有層級關係的資料。但當需要將這些資料存儲在關係型資料庫中時，問題就變得複雜起來。本文將介紹幾種在SQL中實現樹狀結構的主要方法，並分析它們各自的優缺點與實作困難點。
 
-[migration.sql](./migration.sql)
+## 情境說明
 
-## 前置
+讓我們以一個具體的例子來說明 - 假設我們要開發一個bug追蹤系統的評論功能。這個系統需要:
 
-假設現在要做 bug-tracking 軟體的評論功能，使用者除了可以在 bug 內發表評論外，還可以回應特定的評論。可能會像這個樣子：
+1. 使用者可以對bug發表評論
+2. 使用者可以回覆其他人的評論
+3. 評論可以有無限層級的巢狀結構
+4. 需要能夠快速查詢某個評論的所有子評論
+5. 需要能夠快速查詢某個評論的所有父評論
+
+### 範例資料結構
 
 ```
 Fran: 為什麼會有這個 bug ?
@@ -22,59 +28,67 @@ Fran: 為什麼會有這個 bug ?
       └─ Kukla: 加上去後就好了。
 ```
 
-在不考慮階層關係的情況下，我們可以用這樣的一張表把每個評論記下來。
+
+## 基礎資料結構
+
+在不考慮階層關係的情況下，最基本的評論表結構如下:
 
 ```sql
 CREATE TABLE comments (
-  comment_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  bug_id        BIGINT UNSIGNED NOT NULL,
-  author        TEXT NOT NULL,
-  comment_text  TEXT NOT NULL,
+    comment_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    bug_id        BIGINT UNSIGNED NOT NULL,
+    author        TEXT NOT NULL,
+    comment_text  TEXT NOT NULL,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 ```
 
-資料會長這個樣子:
-
+資料範例:
 ```
-comment_id  bug_id  author  comment_text
---------------------------------------------------
-1           1234    Fran    為什麼會有這個 bug ?
-2           1234    Ollie   我想應該是 null pointer。
-3           1234    Fran    不是，我確認過了。
-4           1234    Kukla   應該要去檢查錯誤資料。
-5           1234    Ollie   對，這是個 bug。
-6           1234    Fran    請加上個檢查。
-7           1234    Kukla   加上去後就好了。
+comment_id  bug_id  author  comment_text                   created_at
+------------------------------------------------------------------------
+1           1234    Fran    為什麼會有這個 bug ?          2024-01-01 10:00:00
+2           1234    Ollie   我想應該是 null pointer。     2024-01-01 10:05:00
+3           1234    Fran    不是，我確認過了。            2024-01-01 10:10:00
+4           1234    Kukla   應該要去檢查錯誤資料。        2024-01-01 10:15:00
+5           1234    Ollie   對，這是個 bug。             2024-01-01 10:20:00
+6           1234    Fran    請加上個檢查。               2024-01-01 10:25:00
+7           1234    Kukla   加上去後就好了。             2024-01-01 10:30:00
 ```
 
-## Adjacency List
 
-這個 pattern 應該是最常見也最容易實作與理解的方式：藉由讓每一筆 comment 記住自己的 parent 來維持住階層的關係。在此增加了 `parent_id` 這個欄位。
+## 1. Adjacency List (鄰接表)模型
 
+### 概念
+這是最直觀且最容易實現的方法。每個節點都存儲其父節點的ID。
+
+### 資料結構
 ```sql
 CREATE TABLE comments (
-  comment_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  bug_id        BIGINT UNSIGNED NOT NULL,
-  parent_id     BIGINT UNSIGNED,                -- 新欄位
-  author        TEXT NOT NULL,
-  comment_text  TEXT NOT NULL,
-
-  FOREIGN KEY (parent_id) REFERENCES comments(comment_id) ON DELETE CASCADE
+    comment_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    parent_id     BIGINT UNSIGNED,
+    bug_id        BIGINT UNSIGNED NOT NULL,
+    author        TEXT NOT NULL,
+    comment_text  TEXT NOT NULL,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (parent_id) REFERENCES comments(comment_id) ON DELETE CASCADE
 );
 ```
 
-而資料看起來會長這個樣子:
-
+### 預期資料範例
 ```
-comment_id  parent_id   author  comment
----------------------------------------------------------
-1           NULL        Fran    為什麼會有這個 bug ?
-2           1           Ollie   我想應該是 null pointer。
-3           2           Fran    不是，我確認過了。
-4           1           Kukla   應該要去檢查錯誤資料。
-5           4           Ollie   對，這是個 bug。
-6           4           Fran    請加上個檢查。
-7           6           Kukla   加上去後就好了。
+comment_id  parent_id   author  comment_text                  created_at
+-------------------------------------------------------------------------
+1           NULL        Fran    為什麼會有這個 bug ?         2024-01-01 10:00:00
+2           1           Ollie   我想應該是 null pointer。    2024-01-01 10:05:00
+3           2           Fran    不是，我確認過了。           2024-01-01 10:10:00
+4           1           Kukla   應該要去檢查錯誤資料。       2024-01-01 10:15:00
+5           4           Ollie   對，這是個 bug。            2024-01-01 10:20:00
+6           4           Fran    請加上個檢查。              2024-01-01 10:25:00
+7           6           Kukla   加上去後就好了。            2024-01-01 10:30:00
 ```
 
 ### 查詢
@@ -143,45 +157,75 @@ UPDATE comments SET parent_id = 3 WHERE comment_id = 6;
 DELETE FROM comments WHERE comment_id = 4;
 ```
 
+### 主要困難點
+1. **遞迴查詢效能**
+   - 查詢深層子節點需要多次JOIN或遞迴查詢
+   - 資料量大時效能下降嚴重
+   - 某些資料庫不支援遞迴查詢(CTE)
+   
+2. **分頁處理複雜**
+   - 難以實現帶有層級結構的分頁
+   - 需要額外處理排序邏輯
+   
+3. **樹結構完整性維護**
+   - 刪除節點時需要決定子節點處理方式
+   - 移動節點可能造成循環參照
+   - 需要額外機制防止資料不一致
+   
+   
 ### 小結
 
 優點 :
-
-1. 實作容易，易於理解。
-2. 大部份時候修改資料結構都很單純。
+1. 結構簡單，容易理解
+2. 插入、更新和刪除操作簡單且效率高
+3. 維護成本低
+4. 適合處理動態變化的樹結構
 
 缺點 :
+1. 查詢子樹需要多次遞迴查詢，效能較差
+2. 不易實現樹的整體操作
+3. 在大數據量時查詢性能下降明顯
 
-1. 針對部份樹狀結構做查詢時效能不佳，實作也較麻煩。
 
-## Path Enumeration (Materialized Path)
+
+## 2. Path Enumeration (路徑枚舉)模型
+
+### 概念
+
+通過存儲完整的層級路徑來維護樹狀結構，類似檔案系統的路徑。
 
 所謂的 Path Enumeration，指的就是將整個樹的路徑列舉出來，舉例來講，像檔案系統路徑 `/usr/share/applications` 就是一種 Path Enumeration。
 
 在 Adjacency List 中，每一筆 comment 只知道自己上一層的資料，因此在查詢時會花費額外的功夫。Path Enumeration 透過記錄完整路徑的方式，來解決 Adjacency Lists 難以處理的狀況。表格結構上，增加了 path 這個欄位。
 
+### 資料結構
 ```sql
 CREATE TABLE comments (
-  comment_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  path          VARCHAR(1000),                              -- 新欄位
-  bug_id        BIGINT UNSIGNED NOT NULL,
-  author        TEXT NOT NULL,
-  comment_text  TEXT NOT NULL
+    comment_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    path          VARCHAR(1000),
+    bug_id        BIGINT UNSIGNED NOT NULL,
+    author        TEXT NOT NULL,
+    comment_text  TEXT NOT NULL,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX(path)
 );
 ```
 
 資料:
 
+### 預期資料範例
 ```
-comment_id  path        author  comment
----------------------------------------------------------------------
-1           1/          Fran    為什麼會有這個 bug ?
-2           1/2/        Ollie   我想應該是 null pointer。
-3           1/2/3/      Fran    不是，我確認過了。
-4           1/4/        Kukla   應該要去檢查錯誤資料。
-5           1/4/5/      Ollie   對，這是個 bug。
-6           1/4/6/      Fran    請加上個檢查。
-7           1/4/6/7/    Kukla   加上去後就好了。
+comment_id  path        author  comment_text                  created_at
+------------------------------------------------------------------------------
+1           1/          Fran    為什麼會有這個 bug ?         2024-01-01 10:00:00
+2           1/2/        Ollie   我想應該是 null pointer。    2024-01-01 10:05:00
+3           1/2/3/      Fran    不是，我確認過了。           2024-01-01 10:10:00
+4           1/4/        Kukla   應該要去檢查錯誤資料。       2024-01-01 10:15:00
+5           1/4/5/      Ollie   對，這是個 bug。            2024-01-01 10:20:00
+6           1/4/6/      Fran    請加上個檢查。              2024-01-01 10:25:00
+7           1/4/6/7/    Kukla   加上去後就好了。            2024-01-01 10:30:00
 ```
 
 ### 查詢
@@ -245,32 +289,60 @@ UPDATE comments SET path = CASE WHEN path LIKE '1/4/%' THEN REPLACE(path, '1/', 
 DELETE FROM comments WHERE path LIKE '1/4/%';
 ```
 
+### 主要困難點
+1. **路徑長度限制**
+   - VARCHAR欄位長度限制
+   - 深層節點可能超出限制
+   - 需要考慮路徑壓縮策略
+
+2. **路徑維護開銷**
+   - 移動節點需要更新所有子節點路徑
+   - 大量數據時效能影響顯著
+   - 需要事務保證一致性
+
+3. **索引效率問題**
+   - LIKE查詢可能無法充分利用索引
+   - 需要特別設計索引策略
+   - 可能需要額外的索引結構
+
 ### 小結
 
 優點 :
 
-1. 實作容易，易於理解。
-2. 查詢容易。
+1. 查詢效率高，特別是查詢子樹和祖先
+2. 容易實現樹的排序
+3. 支持快速的層級查詢
+
 
 缺點 :
 
 1. 依賴 LIKE 語法，索引帶來的效能改善受限於語法的使用方式。
 2. 修改資料時需要維護所有子階的路徑資料。
-3. 路徑根據資料庫、primary key 長度等條件，可能會遇到長度限制。
-4. 路徑是自己編碼過的資料，沒有辦法用外來鍵確保資料完整性。
+3. 需要維護路徑的一致性
+4. 路徑根據資料庫、primary key 長度等條件，可能會遇到長度限制。
+5. 路徑是自己編碼過的資料，沒有辦法用外來鍵確保資料完整性。
 
-## Nested Sets
+## 3. Nested Sets (嵌套集合)模型
+
+### 概念
+使用左值(left)和右值(right)來表示樹的層級關係，基於樹的前序遍歷。
 
 Nested Sets 是一種藉由記錄樹的 [Pre-Order Tree Traversal](http://en.wikipedia.org/wiki/Tree_traversal#Pre-order) 順序來達到記錄階層結構的方法。這個方式需要增加以下的欄位：
 
+### 資料結構
 ```sql
 CREATE TABLE comments (
-  comment_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  nsleft        INTEGER NOT NULL,                           -- 新欄位
-  nsright       INTEGER NOT NULL,                           -- 新欄位
-  bug_id        BIGINT UNSIGNED NOT NULL,
-  author        TEXT NOT NULL,
-  comment_text  TEXT NOT NULL
+    comment_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    lft          INTEGER NOT NULL,
+    rgt          INTEGER NOT NULL,
+    bug_id        BIGINT UNSIGNED NOT NULL,
+    author        TEXT NOT NULL,
+    comment_text  TEXT NOT NULL,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX(lft),
+    INDEX(rgt)
 );
 ```
 
@@ -280,18 +352,19 @@ CREATE TABLE comments (
 
 因此資料看起來會是這個樣子：
 
-```
-comment_id  nsleft  nsright author  comment_text
-------------------------------------------------
-1           1       14      Fran    為什麼會有這個 bug ?
-2           2       5       Ollie   我想應該是 null pointer。
-3           3       4       Fran    不是，我確認過了。
-4           6       13      Kukla   應該要去檢查錯誤資料。
-5           7       8       Ollie   對，這是個 bug。
-6           9       12      Fran    請加上個檢查。
-7           1       11      Kukla   加上去後就好了。
-```
 
+### 預期資料範例
+```
+comment_id  lft  rgt   author  comment_text                  created_at
+-----------------------------------------------------------------------------
+1           1    14    Fran    為什麼會有這個 bug ?         2024-01-01 10:00:00
+2           2    5     Ollie   我想應該是 null pointer。    2024-01-01 10:05:00
+3           3    4     Fran    不是，我確認過了。           2024-01-01 10:10:00
+4           6    13    Kukla   應該要去檢查錯誤資料。       2024-01-01 10:15:00
+5           7    8     Ollie   對，這是個 bug。            2024-01-01 10:20:00
+6           9    12    Fran    請加上個檢查。              2024-01-01 10:25:00
+7           10   11    Kukla   加上去後就好了。            2024-01-01 10:30:00
+```
 ## 查詢
 
 有了節點左右方的數字後，就可以利用這些數字查詢子樹結構 :
@@ -348,38 +421,61 @@ INSERT INTO comments (nsleft, nsright, bug_id, author, comment_text) VALUES (8, 
 
 不管新增或搬移，都牽涉到更新許多其他的節點的 `nsleft`, `nsright`，操作也較複雜，因此這兩種資料操作是 Nested Sets 的罩門所在。
 
+### 主要困難點
+1. **插入和移動節點複雜**
+   - 需要重新計算大量節點的左右值
+   - 並發操作容易產生衝突
+   - 需要鎖定相關範圍的數據
+
+2. **節點編號管理**
+   - 需要定期重新編號避免數值溢出
+   - 整理編號時需要鎖定整個表
+   - 可能影響線上服務
+
+3. **維護成本高**
+   - 開發人員需要深入理解機制
+   - 除錯相對困難
+   - 需要額外的維護工具
+
 ### 小結
 
 優點：
 
-1. 各類查詢、刪除兩種動作實作簡單，效能也好。
+1. 查詢完整子樹非常高效
+2. 適合讀取密集的應用
+3. 支持高效的層級查詢
 
 缺點:
 
-1. 新增、搬移實作複雜，而且要維護其他節點的 `nsleft`、`nsright`，不適合在修改次數頻繁且資料量大的結構使用。
-2. 較難理解。
+1. 需要維護左右值的一致性
+2. 不適合頻繁修改的數據
+3. 較難理解。
 
-## Closure Table
+## 4. Closure Table (閉包表)模型
+
+### 概念
+使用額外的表格存儲所有節點間的關係，包括直接和間接關係。
 
 Closure Table 是將節點階層關係全部記錄下來的作法，一種空間換取時間的標準例子。這個作法把每一個節點自己和所有子節點的關係記錄在另一張表格，在查詢時當成 intersect table 使用。所以這種作法需要兩張表格：
 
+### 資料結構
 ```sql
--- 原本的 comments 表格，不作任何修改
 CREATE TABLE comments (
-  comment_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  bug_id        BIGINT UNSIGNED NOT NULL,
-  author        TEXT NOT NULL,
-  comment_text  TEXT NOT NULL,
+    comment_id    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    bug_id        BIGINT UNSIGNED NOT NULL,
+    author        TEXT NOT NULL,
+    comment_text  TEXT NOT NULL,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
--- 用來紀錄階層關係的新表格
-CREATE TABLE comment_tree_paths (
-  ancestor      BIGINT UNSIGNED NOT NULL,
-  descendant    BIGINT UNSIGNED NOT NULL,
-
-  PRIMARY KEY(ancestor, descendant),
-  FOREIGN KEY (ancestor) REFERENCES comments(comment_id),
-  FOREIGN KEY (descendant) REFERENCES comments(comment_id)
+CREATE TABLE comment_paths (
+    ancestor    BIGINT UNSIGNED NOT NULL,
+    descendant  BIGINT UNSIGNED NOT NULL,
+    
+    PRIMARY KEY(ancestor, descendant),
+    FOREIGN KEY (ancestor) REFERENCES comments(comment_id) ON DELETE CASCADE,
+    FOREIGN KEY (descendant) REFERENCES comments(comment_id) ON DELETE CASCADE
 );
 ```
 
@@ -529,23 +625,91 @@ comment 1 下三層的 comment :
 SELECT c.* FROM comments AS c JOIN comment_tree_paths AS t ON c.comment_id = t.ancestor WHERE ancestor = 1 AND path_length <= 3;
 ```
 
+
+### 主要困難點
+1. **存儲空間開銷**
+   - 需要存儲所有祖先子孫關係
+   - 節點數量增長時空間消耗大
+   - 需要權衡存儲成本
+
+2. **關係維護複雜**
+   - 新增/刪除節點需要維護多條關係記錄
+   - 批量操作時性能影響大
+   - 需要正確處理事務
+
+3. **查詢優化難度**
+   - 多表JOIN可能影響效能
+   - 需要精心設計索引策略
+   - 可能需要數據分片
+
 ### 小結
 
 優點:
 
-1. 靈活，可以對應絕大部份對樹狀結構的需求。
-2. 關連資料不在資料本身的表格上，因此關連的方式可以任意使用，利如一筆資料可以出現在不同樹上。
+1. 查詢效率高
+2. 支持多重繼承
+3. 便於維護資料完整性
+4. 適合複雜的樹操作
+
 
 缺點:
 
-1. 查詢速度是用空間換出來的。
-2. 較難理解。
+1. 需要額外的存儲空間
+2. 插入和刪除操作需要維護額外的關係表
+3. 實現相對複雜
+
+
+## 實作建議
+
+### 選擇考慮因素
+1. 數據規模與增長趨勢
+2. 讀寫操作比例
+3. 查詢模式分析
+4. 維護難度評估
+5. 開發團隊能力
+
+### 優化策略
+1. 合理使用緩存
+2. 異步處理更新
+3. 實施分片策略
+4. 定期維護優化
+
+
+## 效能比較
+
+以下是各種方法在不同操作上的效能比較：
+
+| 操作 | Adjacency List | Path Enumeration | Nested Sets | Closure Table |
+|------|---------------|------------------|-------------|---------------|
+| 讀取子節點 | O(n) | O(1) | O(1) | O(1) |
+| 寫入節點 | O(1) | O(1) | O(n) | O(1) |
+| 移動子樹 | O(1) | O(n) | O(n) | O(n) |
+| 刪除子樹 | O(n) | O(n) | O(n) | O(1) |
+
+
 
 ## 總結
 
-每一種實作的方式都有自己的優缺點，選擇時需要考慮到使用的資料結構適合哪一種方式
+每種方法都有其適用場景：
 
-1. **Adjacency List**: 最容易實作和理解，如果資料庫有支援 Recursive Query 的話就能夠改善查詢的問題。
-2. **Path Enumeration**: 缺點較多，但是需要依賴路徑資料時比其他方便。
-3. **Nested Sets**: 適合用在大量查詢為主，偶爾才會修改的資料。
-4. **Closure Table**: 最靈活，唯一一個能讓資料被不同結構關連的作法，但需要花費額外空間。
+1. **簡單應用，頻繁更新**: Adjacency List
+   - 適合層級較淺的結構
+   - 需要頻繁修改的場景
+   - 數據量較小的情況
+
+ 2. **路徑導向應用**: Path Enumeration
+   - 需要快速的路徑查詢
+   - 層級結構相對固定
+   - 需要支持路徑導航
+
+3. **靜態數據，深層查詢**: Nested Sets
+   - 需要頻繁查詢樹結構
+   - 修改操作較少
+   - 需要高效的子樹查詢
+
+4. **複雜查詢，動態結構**: Closure Table
+   - 需要支持複雜的樹操作
+   - 存儲空間不是主要考慮因素
+   - 需要高效的任意節點間關係查詢
+
+
