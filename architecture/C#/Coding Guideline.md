@@ -577,13 +577,13 @@
 
 * **範例**：
   ```
-  feat(auth): implement JWT authentication
-  
-  - Add JWT token generation
-  - Add token validation middleware
-  - Update user login flow
-  
-  Resolves: PROJ-123
+feat(驗證): 實作 JWT 身分驗證機制
+
+- 新增 JWT 權杖產生功能
+- 新增權杖驗證中介軟體
+- 更新使用者登入流程
+
+解決問題: PROJ-123
   ```
 
 ### 6.3. 合併請求 (Pull Request) 規範
@@ -745,5 +745,5 @@
   本規範不是一成不變的，可以根據團隊的需要進行調整和完善。
 
 * 版本歷程：
-  * v2.0 (2024/01/05)：新增版本控制指南、文件化規範和錯誤處理準則
+  * v2.0 (2025/01/05)：新增版本控制指南、文件化規範和錯誤處理準則
   * v1.0 (2024/01/01)：初始版本
